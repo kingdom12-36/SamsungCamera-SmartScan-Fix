@@ -92,13 +92,29 @@ public class MainHook implements IXposedHookLoadPackage {
                     "com.samsung.android.feature.SemFloatingFeature",
                     classLoader);
 
+            SemFloatingFeatureHook hook = new SemFloatingFeatureHook();
+
+            // Hook the single-arg overload: getBoolean(String)
             XposedHelpers.findAndHookMethod(
                     semFloatingFeature,
                     "getBoolean",
                     String.class,
-                    new SemFloatingFeatureHook());
+                    hook);
 
-            XposedBridge.log(TAG + ": SemFloatingFeature.getBoolean hook applied");
+            // Hook the two-arg overload: getBoolean(String, boolean) — for forward compatibility
+            // Some camera paths use this variant with a default value fallback.
+            try {
+                XposedHelpers.findAndHookMethod(
+                        semFloatingFeature,
+                        "getBoolean",
+                        String.class,
+                        boolean.class,
+                        hook);
+            } catch (NoSuchMethodError ignored) {
+                // Overload may not exist in all SemFloatingFeature versions — safe to skip
+            }
+
+            XposedBridge.log(TAG + ": SemFloatingFeature.getBoolean hooks applied");
         } catch (Throwable e) {
             // SemFloatingFeature may not be visible to the app's classLoader on all
             // ROMs — Hook 1 is sufficient in that case; log and continue.
