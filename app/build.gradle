@@ -1,0 +1,45 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.sec.camera.smartscanfix'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.sec.camera.smartscanfix"
+        // Minimum: Android 10 (API 29) — LSPosed requires Android 8.1+
+        // Samsung Camera on modern OneUI needs at minimum API 29
+        minSdk 29
+        targetSdk 34
+        versionCode 3
+        versionName "1.2.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false  // Keep false: obfuscation breaks Xposed hook class lookup
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    // Strip the activity from the APK — Xposed modules don't need a launcher
+    androidResources {
+        ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:<dir>_*:!CVS:!thumbs.db:!picasa.ini:!*~'
+    }
+}
+
+dependencies {
+    // XposedBridgeApi — compileOnly so it's not bundled in the APK
+    // (it's provided at runtime by LSPosed/Xposed framework)
+    compileOnly 'de.robv.android.xposed:api:82'
+    compileOnly 'de.robv.android.xposed:api:82:sources'
+}
