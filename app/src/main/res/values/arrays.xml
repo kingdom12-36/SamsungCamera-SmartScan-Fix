@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Packages this module scopes to — only Samsung Camera -->
+    <string-array name="xposedscope">
+        <item>com.sec.android.app.camera</item>
+    </string-array>
+</resources>
