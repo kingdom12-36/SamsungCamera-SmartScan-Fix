@@ -41,5 +41,4 @@ dependencies {
     // XposedBridgeApi — compileOnly so it's not bundled in the APK
     // (it's provided at runtime by LSPosed/Xposed framework)
     compileOnly 'de.robv.android.xposed:api:82'
-    compileOnly 'de.robv.android.xposed:api:82:sources'
 }
