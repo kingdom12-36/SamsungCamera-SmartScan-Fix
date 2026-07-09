@@ -11,16 +11,26 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 /**
  * LSPosed module entry point.
  *
- * Root cause (decompiled from Samsung Camera smali):
- *   isSmartScanSupported() in IntelligentManager calls:
- *     y2.d.e(y2.b.j2)  →  y2.c.e(SUPPORT_SMART_SCAN enum)
- *     → EnumMap lookup populated by SemFloatingFeature.getBoolean("SUPPORT_SMART_SCAN")
- *     → returns false on custom ROMs (SemFloatingFeature not present / empty)
- *   ADDITIONAL_SCENE_DOCUMENT_SCAN setting defaults to 1 (enabled) in AbstractCameraSettings,
- *   so no user action is required once the support gate is bypassed.
+ * Three gates in Samsung Camera block SmartScan on custom ROMs:
  *
- * Fix: hook both the high-level gate (isSmartScanSupported) and the low-level
- *      SemFloatingFeature source so the EnumMap is also correct on first load.
+ *  Gate 1 — isSmartScanSupported() in IntelligentManager
+ *    Calls y2.d.e(y2.b.j2) → y2.c.e(SUPPORT_SMART_SCAN enum)
+ *    → EnumMap populated by SemFloatingFeature.getBoolean("SUPPORT_SMART_SCAN")
+ *    Returns false when SemFloatingFeature is absent/empty on custom ROMs.
+ *    Fix: hook isSmartScanSupported() → true, and getBoolean() at the source.
+ *
+ *  Gate 2 — y2.c.Y()
+ *    Reads SemFloatingFeature.getString("SEC_FLOATING_FEATURE_CAMERA_CONFIG_VENDOR_LIB_INFO")
+ *    and checks .contains("smart_scan.samsung").
+ *    If false, SrcbSmartScanNode is never selected — the yellow detection
+ *    rectangle never fires even if libSmartScan.camera.samsung.so is present.
+ *    Fix: hook getString() to inject "smart_scan.samsung" into that key's value.
+ *
+ *  Gate 3 — dlopen("libSmartScan.camera.samsung.so") inside libnode-jni.so
+ *    SrcbSmartScanNode needs MLCreateSCEngine / MLSCTracking /
+ *    MLSCGetSkipCount / MLDestroySCEngine from this vendor library.
+ *    Requires the .so to physically exist at /system/lib64/ on the device.
+ *    (No hook can substitute for a missing .so.)
  */
 public class MainHook implements IXposedHookLoadPackage {
 
@@ -36,25 +46,16 @@ public class MainHook implements IXposedHookLoadPackage {
         Log.i(TAG, "Samsung Camera loaded — applying SmartScan hooks");
 
         hookIntelligentManager(lpparam.classLoader);
-        hookSemFloatingFeature(lpparam.classLoader);
+        hookSemFloatingFeatureBoolean(lpparam.classLoader);
+        hookSemFloatingFeatureString(lpparam.classLoader);
     }
 
-    /**
-     * Hook 1 (primary): IntelligentManager.isSmartScanSupported()
-     *
-     * This is the high-level gate checked before showing the scan UI and before
-     * registering native SmartScan callbacks. Returning true unconditionally:
-     *   - Makes the SmartScan border/button appear in the viewfinder
-     *   - Enables the Document Scan toggle in Camera Settings
-     *   - Allows isSmartScanAvailable() to proceed to check the user pref
-     *     (which defaults to enabled, so no extra action needed)
-     */
+    /** Gate 1 (primary): force isSmartScanSupported() -> true */
     private void hookIntelligentManager(ClassLoader classLoader) {
         try {
             Class<?> intelligentManager = XposedHelpers.findClass(
                     "com.sec.android.app.camera.shootingmode.photo.intelligentui.IntelligentManager",
                     classLoader);
-
             XposedHelpers.findAndHookMethod(
                     intelligentManager,
                     "isSmartScanSupported",
@@ -65,7 +66,6 @@ public class MainHook implements IXposedHookLoadPackage {
                             return true;
                         }
                     });
-
             XposedBridge.log(TAG + ": isSmartScanSupported hook applied");
         } catch (Throwable e) {
             XposedBridge.log(TAG + ": Failed to hook isSmartScanSupported: " + e.getMessage());
@@ -74,52 +74,52 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     /**
-     * Hook 2 (defensive): SemFloatingFeature.getBoolean(String)
-     *
-     * The y2.c class populates an EnumMap at construction time using
-     * SemFloatingFeature.getBoolean("SUPPORT_SMART_SCAN"). On custom ROMs the
-     * SemFloatingFeature service is absent or returns false for all Samsung keys.
-     *
-     * We intercept getBoolean() at the source and return true for the specific
-     * SmartScan key. This ensures the EnumMap is also correct if the app reads it
-     * through any path other than isSmartScanSupported().
-     *
-     * All other feature keys pass through unmodified.
+     * Gate 1 (defensive): SemFloatingFeature.getBoolean() for SUPPORT_SMART_SCAN* keys.
+     * y2.c populates its EnumMap at construction — intercepting at the source keeps
+     * that map correct for any code path that reads it directly.
      */
-    private void hookSemFloatingFeature(ClassLoader classLoader) {
+    private void hookSemFloatingFeatureBoolean(ClassLoader classLoader) {
         try {
-            Class<?> semFloatingFeature = XposedHelpers.findClass(
+            Class<?> semFF = XposedHelpers.findClass(
                     "com.samsung.android.feature.SemFloatingFeature",
                     classLoader);
-
             SemFloatingFeatureHook hook = new SemFloatingFeatureHook();
-
-            // Hook the single-arg overload: getBoolean(String)
-            XposedHelpers.findAndHookMethod(
-                    semFloatingFeature,
-                    "getBoolean",
-                    String.class,
-                    hook);
-
-            // Hook the two-arg overload: getBoolean(String, boolean) — for forward compatibility
-            // Some camera paths use this variant with a default value fallback.
+            XposedHelpers.findAndHookMethod(semFF, "getBoolean", String.class, hook);
             try {
-                XposedHelpers.findAndHookMethod(
-                        semFloatingFeature,
-                        "getBoolean",
-                        String.class,
-                        boolean.class,
-                        hook);
-            } catch (NoSuchMethodError ignored) {
-                // Overload may not exist in all SemFloatingFeature versions — safe to skip
-            }
-
+                XposedHelpers.findAndHookMethod(semFF, "getBoolean",
+                        String.class, boolean.class, hook);
+            } catch (NoSuchMethodError ignored) { }
             XposedBridge.log(TAG + ": SemFloatingFeature.getBoolean hooks applied");
         } catch (Throwable e) {
-            // SemFloatingFeature may not be visible to the app's classLoader on all
-            // ROMs — Hook 1 is sufficient in that case; log and continue.
-            XposedBridge.log(TAG + ": SemFloatingFeature hook skipped (not accessible): " + e.getMessage());
-            Log.w(TAG, "SemFloatingFeature hook skipped: " + e.getMessage());
+            XposedBridge.log(TAG + ": SemFloatingFeature.getBoolean hook skipped: " + e.getMessage());
+            Log.w(TAG, "getBoolean hook skipped: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Gate 2: SemFloatingFeature.getString() for vendor-lib-info and document-scan keys.
+     *
+     * SEC_FLOATING_FEATURE_CAMERA_CONFIG_VENDOR_LIB_INFO must contain "smart_scan.samsung"
+     * or y2.c.Y() returns false and SrcbSmartScanNode is never instantiated.
+     *
+     * SEC_FLOATING_FEATURE_CAMERA_DOCUMENTSCAN_SOLUTIONS must be non-null/non-empty
+     * or the entire document-scan pipeline is skipped.
+     */
+    private void hookSemFloatingFeatureString(ClassLoader classLoader) {
+        try {
+            Class<?> semFF = XposedHelpers.findClass(
+                    "com.samsung.android.feature.SemFloatingFeature",
+                    classLoader);
+            SemFloatingFeatureStringHook hook = new SemFloatingFeatureStringHook();
+            XposedHelpers.findAndHookMethod(semFF, "getString", String.class, hook);
+            try {
+                XposedHelpers.findAndHookMethod(semFF, "getString",
+                        String.class, String.class, hook);
+            } catch (NoSuchMethodError ignored) { }
+            XposedBridge.log(TAG + ": SemFloatingFeature.getString hooks applied");
+        } catch (Throwable e) {
+            XposedBridge.log(TAG + ": SemFloatingFeature.getString hook skipped: " + e.getMessage());
+            Log.w(TAG, "getString hook skipped: " + e.getMessage());
         }
     }
 }
