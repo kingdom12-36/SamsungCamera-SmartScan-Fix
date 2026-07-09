@@ -3,11 +3,14 @@ package com.sec.camera.smartscanfix;
 import android.util.Log;
 
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
 
 /**
- * Hooks SemFloatingFeature.getBoolean(String) and returns true for the
- * SUPPORT_SMART_SCAN key while passing everything else through unchanged.
+ * Hooks both overloads of SemFloatingFeature.getBoolean() and returns true for
+ * SUPPORT_SMART_SCAN* keys while passing everything else through unchanged.
+ *
+ * Two overloads exist:
+ *   getBoolean(String)           — used in EnumMap population (y2.c constructor)
+ *   getBoolean(String, boolean)  — used in some paths as a default-value variant
  *
  * Why a separate class: keeps MainHook clean and makes it easy to add more
  * feature-key overrides in future without cluttering the entry point.
@@ -29,6 +32,7 @@ public class SemFloatingFeatureHook extends XC_MethodHook {
 
     @Override
     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+        // param.args[0] is the key in both getBoolean(String) and getBoolean(String, boolean)
         String key = (String) param.args[0];
         if (key == null) return;
 
